@@ -32,7 +32,7 @@ const LANGUAGES = {
     {text:"Jumpa lagi",reading:"JUM-pa LA-gi",meaning:"また会いましょう",category:"子音・リズム",accept:["jumpa lagi"]}]}
 };
 
-const $=id=>document.getElementById(id); let state={},mediaRecorder,chunks=[],recognition;
+const $=id=>document.getElementById(id); let state={},mediaRecorder,chunks=[],recognition,recognitionHasResult=false,recognitionError='',recognitionWaitTimer;
 function init(){
   $("languageChoices").innerHTML=Object.entries(LANGUAGES).map(([k,v])=>`<label class="language-choice"><input type="checkbox" value="${k}" ${k==='ja'||k==='en'?'checked':''}><span>${v.flag} ${v.name}</span></label>`).join('');
   $("startButton").onclick=start; $("listenButton").onclick=speak; $("recordButton").onclick=record;
@@ -61,8 +61,22 @@ function renderQuestion(){
 }
 function speak(){const q=state.questions[state.turn],u=new SpeechSynthesisUtterance(q.text);u.lang=LANGUAGES[q.lang].locale;u.rate=.82;speechSynthesis.cancel();speechSynthesis.speak(u)}
 async function record(){
-  if(mediaRecorder?.state==='recording'){mediaRecorder.stop();recognition?.stop();return}
+  if(mediaRecorder?.state==='recording'){
+    $("recordStatus").textContent='録音を終了しました。音声を認識しています…';
+    mediaRecorder.stop();
+    try{recognition?.stop()}catch(e){}
+    clearTimeout(recognitionWaitTimer);
+    recognitionWaitTimer=setTimeout(()=>{
+      if(!recognitionHasResult && $("resultCard").hidden){
+        const detail=recognitionError?`（${recognitionError}）`:'';
+        $("recordStatus").textContent=`自動認識の結果を取得できませんでした${detail}。もう一度試すか、下の「手動採点」を使用してください。`;
+        $("recordButton").disabled=false;
+      }
+    },3500);
+    return;
+  }
   try{
+    recognitionHasResult=false;recognitionError='';clearTimeout(recognitionWaitTimer);
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});chunks=[];mediaRecorder=new MediaRecorder(stream);
     mediaRecorder.ondataavailable=e=>chunks.push(e.data);mediaRecorder.onstop=()=>{const blob=new Blob(chunks,{type:mediaRecorder.mimeType});$("playback").src=URL.createObjectURL(blob);$("playback").hidden=false;stream.getTracks().forEach(t=>t.stop());$("recordButton").classList.remove('recording')};
     mediaRecorder.start();$("recordButton").classList.add('recording');$("recordStatus").textContent='録音中…もう一度押すと終了';startRecognition();setTimeout(()=>{if(mediaRecorder?.state==='recording'){mediaRecorder.stop();recognition?.stop()}},7000);
@@ -71,8 +85,17 @@ async function record(){
 function startRecognition(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){$("recordStatus").textContent='このブラウザは自動認識に未対応です。録音後、手動採点してください。';return}
   const q=state.questions[state.turn];recognition=new SR();recognition.lang=LANGUAGES[q.lang].locale;recognition.interimResults=false;recognition.maxAlternatives=5;
-  recognition.onresult=e=>{const heard=[...e.results[0]].map(x=>x.transcript);const score=Math.max(...heard.flatMap(h=>q.accept.map(a=>similarity(h,a))));scoreRound(Math.round(score*100),heard[0])};
-  recognition.onerror=()=>{$("recordStatus").textContent='自動認識できませんでした。再挑戦または手動採点ができます。'};recognition.start();
+  recognition.onresult=e=>{recognitionHasResult=true;clearTimeout(recognitionWaitTimer);const heard=Array.from(e.results[0]).map(x=>x.transcript);const score=Math.max(...heard.flatMap(h=>q.accept.map(a=>similarity(h,a))));scoreRound(Math.round(score*100),heard[0])};
+  recognition.onerror=e=>{recognitionError=e.error||'認識エラー';};
+  recognition.onend=()=>{
+    if(!recognitionHasResult && mediaRecorder?.state!=='recording'){
+      clearTimeout(recognitionWaitTimer);
+      const detail=recognitionError?`（${recognitionError}）`:'';
+      $("recordStatus").textContent=`自動認識の結果を取得できませんでした${detail}。もう一度試すか、下の「手動採点」を使用してください。`;
+      $("recordButton").disabled=false;
+    }
+  };
+  try{recognition.start()}catch(e){recognitionError='音声認識を開始できません';$("recordStatus").textContent='音声認識を開始できませんでした。再読み込みしてお試しください。'}
 }
 function normalize(s){return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[\s.,!?¿'’\-]/g,'')}
 function similarity(a,b){a=normalize(a);b=normalize(b);if(a===b)return 1;const m=a.length,n=b.length,d=Array.from({length:m+1},(_,i)=>[i]);for(let j=1;j<=n;j++)d[0][j]=j;for(let i=1;i<=m;i++)for(let j=1;j<=n;j++)d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(a[i-1]===b[j-1]?0:1));return Math.max(0,1-d[m][n]/Math.max(m,n,1))}
